@@ -2,6 +2,7 @@ import os
 import httpx
 import time
 import logging
+import pathlib
 from typing import List, Dict, Any, Optional, Tuple
 from collections import OrderedDict
 from dotenv import load_dotenv
@@ -17,9 +18,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("llm_integration")
 
-load_dotenv()
+backend_dir = pathlib.Path(__file__).parent.parent
+load_dotenv(backend_dir / ".env")
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    logger.error("OPENROUTER_API_KEY not found in environment variables")
+    raise ValueError("OPENROUTER_API_KEY not found in environment variables")
 
 LLM_MODELS = {
     "gpt-4-turbo": {
@@ -65,7 +70,8 @@ class LLMIntegration:
         self.total_acu_consumed = 0
         self.api_calls_count = 0
         
-        logger.info("LLMIntegration initialized with OpenRouter API")
+        logger.info(f"LLMIntegration initialized with OpenRouter API")
+        logger.info(f"Authorization header: Bearer {self.api_key[:10]}...")
         
     def _update_cache(self, key: str, value: str) -> None:
         """
@@ -141,6 +147,8 @@ class LLMIntegration:
             try:
                 async with httpx.AsyncClient() as client:
                     logger.info(f"API呼び出し開始: {model_key} モデル")
+                    logger.info(f"Sending request to {self.base_url} with headers: {self.headers}")
+                    logger.info(f"Payload: {payload}")
                     response = await client.post(
                         self.base_url,
                         headers=self.headers,
@@ -246,8 +254,19 @@ class LLMIntegration:
             if model_key == "claude-3-opus":
                 specific_instruction = """
                 あなたの主な役割は、ユーザーの曖昧な表現を明確にし、具体的な情報に変換することです。
-                また、ユーザーから十分な情報を得るために、次の質問を生成してください。
+                また、ユーザーから十分な情報を得るために、次の質問を自動的に生成してください。
+                
                 質問は具体的で、VBAコード生成に必要な情報を引き出すものにしてください。
+                特に以下の情報を収集することが重要です：
+                1. 工事の種類と詳細（建築、土木、設備など）
+                2. 作業内容の詳細（高所作業、重機使用、電気工事など）
+                3. 現場の特性（屋内/屋外、高層/低層など）
+                4. 特殊な安全対策が必要な条件（危険物取扱、交通量の多い場所など）
+                5. 作業員の資格や経験レベル
+                
+                必ず質問文で終わるようにしてください。ユーザーが回答しやすいよう、具体的な質問を1-2個に絞って提示してください。
+                あなたの回答は自動的にユーザーに表示されるため、「メッセージを受け取りました」などの定型文は使わず、
+                直接質問を生成してください。
                 """
             elif model_key == "gpt-4-turbo":
                 specific_instruction = """

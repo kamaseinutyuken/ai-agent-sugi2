@@ -1,5 +1,5 @@
 import { useState, useRef, FormEvent } from 'react'
-import { Upload, Send, FileSpreadsheet, Bot } from 'lucide-react'
+import { Upload, Send, FileSpreadsheet, Bot, RefreshCw } from 'lucide-react'
 import './App.css'
 
 import { Button } from './components/ui/button'
@@ -23,12 +23,22 @@ interface FormData {
   workerCount: string;
 }
 
+interface UIMessage {
+  id: string;
+  content: string;
+  sender: 'user' | 'ai';
+  timestamp: Date;
+}
+
 function App() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<UIMessage[]>([]);
   const [currentMessage, setCurrentMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isFileUploaded, setIsFileUploaded] = useState(false);
+  const [fileData, setFileData] = useState(null);
+  const [apiFormData, setApiFormData] = useState(null);
   
   const [formData, setFormData] = useState<FormData>({
     projectName: '',
@@ -40,13 +50,32 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (event: any) => {
     const file = event.target.files?.[0] || null;
     if (file && file.name.endsWith('.xlsm')) {
       setSelectedFile(file);
       setIsFileUploaded(true);
+      setIsLoading(true);
       
-      addMessage(`Excelファイル "${file.name}" がアップロードされました。`, 'ai');
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      fetch('http://localhost:8000/api/upload-excel', {
+        method: 'POST',
+        body: formData,
+      })
+      .then(response => response.json())
+      .then(data => {
+        setFileData(data.data);
+        addMessage(`Excelファイル "${file.name}" がアップロードされました。ナレッジベースを生成しています。`, 'ai');
+      })
+      .catch(error => {
+        console.error('File upload error:', error);
+        addMessage(`ファイルのアップロードに失敗しました。`, 'ai');
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
     } else if (file) {
       alert('アップロードできるのは.xlsmファイルのみです。');
     }
@@ -58,18 +87,62 @@ function App() {
   
   const handleSubmitMessage = (e: FormEvent) => {
     e.preventDefault();
-    if (currentMessage.trim()) {
+    if (currentMessage.trim() && !isLoading) {
       addMessage(currentMessage, 'user');
       setCurrentMessage('');
+      setIsLoading(true);
       
-      setTimeout(() => {
-        addMessage('メッセージを受け取りました。処理中です...', 'ai');
-      }, 1000);
+      const apiMessages = messages
+        .filter(msg => msg.sender === 'user' || msg.sender === 'ai')
+        .map(msg => ({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.content
+        }));
+      
+      apiMessages.push({
+        role: 'user',
+        content: currentMessage
+      });
+      
+      fetch('http://localhost:8000/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: apiMessages,
+          file_data: fileData,
+          form_data: apiFormData
+        }),
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('API response was not ok');
+        }
+        return response.json();
+      })
+      .then(data => {
+        console.log('API response:', data);
+        if (data && data.message && data.message.content) {
+          addMessage(data.message.content, 'ai');
+        } else if (data && data.message) {
+          addMessage(String(data.message), 'ai');
+        } else {
+          addMessage('応答の形式が正しくありません。', 'ai');
+        }
+      })
+      .catch(error => {
+        console.error('Chat error:', error);
+        addMessage('エラーが発生しました。もう一度お試しください。', 'ai');
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
     }
   };
   
   const addMessage = (content: string, sender: 'user' | 'ai') => {
-    const newMessage: Message = {
+    const newMessage: UIMessage = {
       id: Date.now().toString(),
       content,
       sender,
@@ -92,13 +165,73 @@ function App() {
   
   const handleFormSubmit = (e: FormEvent) => {
     e.preventDefault();
-    console.log('Form data submitted:', formData);
+    setIsLoading(true);
     
-    addMessage(`確定情報が入力されました:
+    const apiData = {
+      project_name: formData.projectName,
+      location: formData.location,
+      period: formData.period,
+      workers: parseInt(formData.workerCount) || 0
+    };
+    
+    fetch('http://localhost:8000/api/submit-form', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(apiData),
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('API response was not ok');
+      }
+      return response.json();
+    })
+    .then(data => {
+      setApiFormData(data.data);
+      
+      addMessage(`確定情報が入力されました:
 工事名: ${formData.projectName} (セルI9)
 施工場所: ${formData.location} (セルI11)
 工期: ${formData.period} (セルI13)
 作業者数: ${formData.workerCount} (セルQ15)`, 'ai');
+    })
+    .catch(error => {
+      console.error('Form submission error:', error);
+      addMessage('フォームデータの送信に失敗しました。', 'ai');
+    })
+    .finally(() => {
+      setIsLoading(false);
+    });
+  };
+  
+  const handleReset = () => {
+    if (window.confirm('会話とデータをリセットしますか？')) {
+      setIsLoading(true);
+      
+      fetch('http://localhost:8000/api/reset', {
+        method: 'DELETE',
+      })
+      .then(() => {
+        setMessages([]);
+        setFileData(null);
+        setSelectedFile(null);
+        setIsFileUploaded(false);
+        setFormData({
+          projectName: '',
+          location: '',
+          period: '',
+          workerCount: ''
+        });
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        alert('リセットに失敗しました。');
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
+    }
   };
   
   return (
@@ -115,13 +248,26 @@ function App() {
         <div className="md:col-span-2">
           <Card className="h-full flex flex-col">
             <CardHeader>
-              <CardTitle className="flex items-center">
-                <Bot className="mr-2" size={20} />
-                チャットインターフェース
-              </CardTitle>
-              <CardDescription>
-                情報を入力するか、Excelファイルをアップロードしてください
-              </CardDescription>
+              <div className="flex justify-between items-center">
+                <div>
+                  <CardTitle className="flex items-center">
+                    <Bot className="mr-2" size={20} />
+                    チャットインターフェース
+                  </CardTitle>
+                  <CardDescription>
+                    情報を入力するか、Excelファイルをアップロードしてください
+                  </CardDescription>
+                </div>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handleReset}
+                  disabled={isLoading}
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  リセット
+                </Button>
+              </div>
             </CardHeader>
             
             <CardContent className="flex-grow">
@@ -205,8 +351,9 @@ function App() {
                   onChange={(e) => setCurrentMessage(e.target.value)}
                   placeholder="メッセージを入力..."
                   className="flex-grow"
+                  disabled={isLoading}
                 />
-                <Button type="submit">
+                <Button type="submit" disabled={isLoading}>
                   <Send className="h-4 w-4 mr-2" />
                   送信
                 </Button>
@@ -272,7 +419,7 @@ function App() {
                   </FormControl>
                 </FormItem>
                 
-                <Button type="submit" className="w-full mt-4">
+                <Button type="submit" className="w-full mt-4" disabled={isLoading}>
                   確定情報を保存
                 </Button>
               </form>

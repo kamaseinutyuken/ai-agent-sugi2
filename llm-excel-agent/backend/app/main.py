@@ -92,7 +92,18 @@ async def chat(request: ChatRequest):
         )
         
         if current_round == 1:
-            response_content = "工事名、施工場所、工期、作業員数などの確定情報を教えてください。"
+            system_message = Message(
+                role=MessageRole.SYSTEM,
+                content="あなたは工事現場の安全計画に関する情報を収集するアシスタントです。最初の質問として、工事名、施工場所、工期、作業員数などの基本情報を尋ねてください。"
+            )
+            
+            temp_messages = [system_message] + conversation_store[session_id]
+            
+            claude_responses = await llm_service.process_with_all_llms(temp_messages)
+            response_content = claude_responses[2]  # Claude's response (index 2)
+            
+            if not response_content or len(response_content.strip()) == 0:
+                response_content = "工事名、施工場所、工期、作業員数などの確定情報を教えてください。"
         
         elif current_round < 4:
             response_content = llm_responses[2]  # Claude's response (index 2)
